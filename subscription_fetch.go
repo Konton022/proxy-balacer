@@ -113,6 +113,43 @@ func ParseConfigLink(link string) (remark, protocol, raw string) {
 	return
 }
 
+func extractRealityParams(link string) (uuid, sni, pbk, sid, spx, fp, flow string) {
+	uuid, _, _ = ParseConfigLink(link)
+	host, _, _ := extractServerInfo(link)
+
+	if strings.HasPrefix(link, "vmess://") {
+		data := strings.TrimPrefix(link, "vmess://")
+		if d, err := base64.StdEncoding.DecodeString(data); err == nil {
+			var v map[string]interface{}
+			if json.Unmarshal(d, &v) == nil {
+				sni, _ = v["host"].(string)
+				fp, _ = v["fp"].(string)
+				flow, _ = v["flow"].(string)
+			}
+		}
+		return
+	}
+
+	u, err := url.Parse(link)
+	if err != nil {
+		return
+	}
+	q := u.Query()
+	sni = q.Get("sni")
+	if sni == "" {
+		sni = q.Get("host")
+	}
+	if sni == "" && q.Get("security") == "reality" {
+		sni = host
+	}
+	pbk = q.Get("pbk")
+	sid = q.Get("sid")
+	spx = q.Get("spx")
+	fp = q.Get("fp")
+	flow = q.Get("flow")
+	return
+}
+
 func ParseConfigLinkFull(link string, backendID uint) SubConfig {
 	remark, protocol, raw := ParseConfigLink(link)
 	host, port, _ := extractServerInfo(link)

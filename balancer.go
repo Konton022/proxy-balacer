@@ -248,6 +248,17 @@ func (b *Balancer) IsUp(addr string) bool {
 	return b.health.IsUp(addr)
 }
 
+func (b *Balancer) GetBackendByAddr(addr string) *Backend {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for i := range b.backends {
+		if b.backends[i].Addr() == addr {
+			return &b.backends[i]
+		}
+	}
+	return nil
+}
+
 func (b *Balancer) GetPing(addr string) int64 {
 	return b.health.GetPing(addr)
 }

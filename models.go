@@ -19,6 +19,13 @@ type Backend struct {
 	LastFetch time.Time `json:"last_fetch"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	UUID            string `json:"uuid"`
+	RealityPubKey   string `json:"reality_pub_key"`
+	RealityShortID  string `json:"reality_short_id"`
+	RealitySpiderX  string `json:"reality_spider_x"`
+	Fingerprint     string `json:"fingerprint"`
+	Flow            string `json:"flow"`
 }
 
 func (b *Backend) Addr() string {

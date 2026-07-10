@@ -42,6 +42,13 @@ func main() {
 	balancer := NewBalancer(db, cfg)
 	go balancer.Start(ctx)
 
+	if cfg.ProxyUUID == "" {
+		cfg.ProxyUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+		log.Printf("[Config] Using default proxy UUID: %s (set proxy_uuid in config.yaml)", cfg.ProxyUUID)
+	} else {
+		log.Printf("[Config] Proxy UUID: %s", cfg.ProxyUUID)
+	}
+
 	var (
 		admin       *AdminServer
 		adminServer *http.Server
@@ -67,6 +74,32 @@ func main() {
 	proxy := NewProxy(balancer, admin)
 	if admin != nil {
 		admin.SetProxy(proxy)
+	}
+
+	if cfg.TLSEnabled && cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+		if err := proxy.InitTLS(); err != nil {
+			log.Printf("[Proxy] TLS init failed: %v (falling back to self-signed)", err)
+			certFile := cfg.DBPath + ".crt"
+			keyFile := cfg.DBPath + ".key"
+			if err := ensureSelfSignedCert(certFile, keyFile); err != nil {
+				log.Fatalf("Self-signed cert failed: %v", err)
+			}
+			cfg.TLSCertFile = certFile
+			cfg.TLSKeyFile = keyFile
+			proxy.InitTLS()
+		} else {
+			log.Printf("[Proxy] TLS enabled with cert: %s", cfg.TLSCertFile)
+		}
+	} else {
+		certFile := cfg.DBPath + ".crt"
+		keyFile := cfg.DBPath + ".key"
+		if err := ensureSelfSignedCert(certFile, keyFile); err != nil {
+			log.Fatalf("Self-signed cert failed: %v", err)
+		}
+		cfg.TLSCertFile = certFile
+		cfg.TLSKeyFile = keyFile
+		proxy.InitTLS()
+		log.Printf("[Proxy] TLS enabled with self-signed cert")
 	}
 	proxyListener, err := net.Listen("tcp", cfg.Addr())
 	if err != nil {
@@ -123,6 +156,16 @@ func seedBackendsFromConfig(db *gorm.DB, cfg *Config) {
 				backend.Host = host
 				backend.Port = port
 				backend.SNI = sni
+			}
+			uuid, realitySNI, pbk, sid, spx, fp, flow := extractRealityParams(configs[0])
+			backend.UUID = uuid
+			backend.RealityPubKey = pbk
+			backend.RealityShortID = sid
+			backend.RealitySpiderX = spx
+			backend.Fingerprint = fp
+			backend.Flow = flow
+			if realitySNI != "" {
+				backend.SNI = realitySNI
 			}
 			backend.LastFetch = time.Now()
 		}

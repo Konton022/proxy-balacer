@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"embed"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -449,15 +448,26 @@ func (a *AdminServer) addBackend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	uuid, realitySNI, pbk, sid, spx, fp, flow := extractRealityParams(configs[0])
+
 	backend := Backend{
-		Name:      name,
-		SubURL:    subURL,
-		Host:      host,
-		Port:      port,
-		SNI:       sni,
-		Primary:   r.FormValue("primary") == "on",
-		Enabled:   true,
-		LastFetch: time.Now(),
+		Name:            name,
+		SubURL:          subURL,
+		Host:            host,
+		Port:            port,
+		SNI:             sni,
+		Primary:         r.FormValue("primary") == "on",
+		Enabled:         true,
+		LastFetch:       time.Now(),
+		UUID:            uuid,
+		RealityPubKey:   pbk,
+		RealityShortID:  sid,
+		RealitySpiderX:  spx,
+		Fingerprint:     fp,
+		Flow:            flow,
+	}
+	if realitySNI != "" {
+		backend.SNI = realitySNI
 	}
 
 	if err := a.db.Create(&backend).Error; err != nil {
@@ -495,12 +505,24 @@ func (a *AdminServer) refetchBackend(w http.ResponseWriter, r *http.Request, pat
 
 	host, port, sni, err := ParseBackendFromSubscription(backend.SubURL, configs)
 	if err == nil {
-		a.db.Model(&backend).Updates(map[string]interface{}{
+		uuid, realitySNI, pbk, sid, spx, fp, flow := extractRealityParams(configs[0])
+		updates := map[string]interface{}{
 			"host":       host,
 			"port":       port,
-			"sni":        sni,
 			"last_fetch": time.Now(),
-		})
+			"uuid":       uuid,
+			"reality_pub_key":  pbk,
+			"reality_short_id": sid,
+			"reality_spider_x": spx,
+			"fingerprint":      fp,
+			"flow":             flow,
+		}
+		if realitySNI != "" {
+			updates["sni"] = realitySNI
+		} else {
+			updates["sni"] = sni
+		}
+		a.db.Model(&backend).Updates(updates)
 	} else {
 		a.db.Model(&backend).Update("last_fetch", time.Now())
 	}
@@ -672,13 +694,8 @@ func (a *AdminServer) subscriptionEndpoint(w http.ResponseWriter, r *http.Reques
 	token = strings.TrimSuffix(token, ".txt")
 
 	var sub Subscription
-	if err := a.db.Where("token = ? AND enabled = ?", token, true).Preload("Configs").First(&sub).Error; err != nil {
+	if err := a.db.Where("token = ? AND enabled = ?", token, true).First(&sub).Error; err != nil {
 		http.NotFound(w, r)
-		return
-	}
-
-	if len(sub.Configs) == 0 {
-		w.Write([]byte{})
 		return
 	}
 
@@ -693,18 +710,18 @@ func (a *AdminServer) subscriptionEndpoint(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	configs := a.filterActiveConfigs(sub.Configs)
-	subData := GenerateSubscription(configs, balancerHost, a.config.ListenPort)
-	if subData == "" {
-		w.Write([]byte{})
-		return
+	proxyUUID := a.config.ProxyUUID
+	if proxyUUID == "" {
+		proxyUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	}
 
-	decoded, _ := base64.StdEncoding.DecodeString(subData)
+	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp#Balancer",
+		proxyUUID, balancerHost, a.config.ListenPort, balancerHost)
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store, must-revalidate")
 	w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d", 0, 0, 0, 0))
-	io.WriteString(w, string(decoded))
+	io.WriteString(w, link)
 }
 
 func (a *AdminServer) ServeSubscriptionHTTP(conn net.Conn, req *http.Request) {
@@ -714,13 +731,8 @@ func (a *AdminServer) ServeSubscriptionHTTP(conn net.Conn, req *http.Request) {
 	token = strings.TrimSuffix(token, ".txt")
 
 	var sub Subscription
-	if err := a.db.Where("token = ? AND enabled = ?", token, true).Preload("Configs").First(&sub).Error; err != nil {
+	if err := a.db.Where("token = ? AND enabled = ?", token, true).First(&sub).Error; err != nil {
 		conn.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"))
-		return
-	}
-
-	if len(sub.Configs) == 0 {
-		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
 		return
 	}
 
@@ -732,15 +744,15 @@ func (a *AdminServer) ServeSubscriptionHTTP(conn net.Conn, req *http.Request) {
 		}
 	}
 
-	configs := a.filterActiveConfigs(sub.Configs)
-	subData := GenerateSubscription(configs, balancerHost, a.config.ListenPort)
-	if subData == "" {
-		conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
-		return
+	proxyUUID := a.config.ProxyUUID
+	if proxyUUID == "" {
+		proxyUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	}
 
-	decoded, _ := base64.StdEncoding.DecodeString(subData)
-	resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store, must-revalidate\r\nContent-Length: %d\r\nSubscription-Userinfo: upload=0; download=0; total=0; expire=0\r\n\r\n%s", len(decoded), string(decoded))
+	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp#Balancer",
+		proxyUUID, balancerHost, a.config.ListenPort, balancerHost)
+
+	resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store, must-revalidate\r\nContent-Length: %d\r\nSubscription-Userinfo: upload=0; download=0; total=0; expire=0\r\n\r\n%s", len(link), link)
 	conn.Write([]byte(resp))
 }
 

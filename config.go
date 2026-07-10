@@ -42,6 +42,8 @@ type Config struct {
 	TLSEmail    string `yaml:"tls_email"`
 	TLSKeyFile  string `yaml:"tls_key_file"`
 	TLSCertFile string `yaml:"tls_cert_file"`
+
+	ProxyUUID string `yaml:"proxy_uuid"`
 }
 
 func LoadConfig(path string) (*Config, error) {

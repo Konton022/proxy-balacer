@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"io"
 	"log"
 	"net"
@@ -19,19 +20,39 @@ type Proxy struct {
 	metrics  *Metrics
 	config   *Config
 	conns    atomic.Int64
+	tlsCfg   *tls.Config
+	proxyUUID [16]byte
 }
 
 func NewProxy(b *Balancer, admin *AdminServer) *Proxy {
-	return &Proxy{
+	p := &Proxy{
 		balancer: b,
 		admin:    admin,
 		metrics:  NewMetrics(),
 		config:   b.config,
 	}
+	if b.config.ProxyUUID != "" {
+		p.proxyUUID, _ = ParseUUID(b.config.ProxyUUID)
+	} else {
+		p.proxyUUID, _ = ParseUUID("00000000-0000-0000-0000-000000000000")
+	}
+	return p
 }
 
 func (p *Proxy) Metrics() *Metrics {
 	return p.metrics
+}
+
+func (p *Proxy) InitTLS() error {
+	cert, err := tls.LoadX509KeyPair(p.config.TLSCertFile, p.config.TLSKeyFile)
+	if err != nil {
+		return err
+	}
+	p.tlsCfg = &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	return nil
 }
 
 func (p *Proxy) Serve(ctx context.Context, listener net.Listener) {
@@ -51,113 +72,150 @@ func (p *Proxy) Serve(ctx context.Context, listener net.Listener) {
 				continue
 			}
 		}
-		go p.handleConnection(conn)
+		go p.handleRawConnection(conn)
 	}
 }
 
-func (p *Proxy) routeBySNI(sni string) string {
-	be := p.balancer.BackendForSNI(sni)
-	if be != nil && p.balancer.IsUp(be.Addr()) {
-		return be.Addr()
+func (p *Proxy) handleRawConnection(conn net.Conn) {
+	firstByte := make([]byte, 1)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err := io.ReadFull(conn, firstByte)
+	conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		conn.Close()
+		return
 	}
-	return p.balancer.GetActive()
+
+	prepend := &PrependConn{Conn: conn, buf: firstByte}
+
+	if firstByte[0] == 0x16 {
+		p.handleTLSConnection(prepend)
+	} else if firstByte[0] == 'G' || firstByte[0] == 'P' || firstByte[0] == 'D' || firstByte[0] == 'C' || firstByte[0] == 'O' {
+		p.handleHTTPConnection(prepend)
+	} else {
+		conn.Close()
+	}
 }
 
-func (p *Proxy) handleConnection(clientConn net.Conn) {
+type PrependConn struct {
+	net.Conn
+	buf []byte
+}
+
+func (c *PrependConn) Read(p []byte) (int, error) {
+	if len(c.buf) > 0 {
+		n := copy(p, c.buf)
+		c.buf = c.buf[n:]
+		return n, nil
+	}
+	return c.Conn.Read(p)
+}
+
+func (p *Proxy) handleTLSConnection(conn net.Conn) {
 	p.metrics.RecordConnection()
 	defer func() {
 		p.metrics.RecordClose()
-		clientConn.Close()
+		conn.Close()
 	}()
 
-	bufReader := bufio.NewReader(clientConn)
+	if p.tlsCfg == nil {
+		return
+	}
 
-	peek, err := bufReader.Peek(4)
+	tlsConn := tls.Server(conn, p.tlsCfg)
+	if err := tlsConn.Handshake(); err != nil {
+		return
+	}
+	defer tlsConn.Close()
+
+	bufReader := bufio.NewReader(tlsConn)
+	header, err := ReadVLESSHeader(bufReader)
 	if err != nil {
+		log.Printf("[Proxy] VLESS header error: %v", err)
 		return
 	}
 
-	if string(peek) == "GET " || string(peek) == "POST" {
-		req, err := http.ReadRequest(bufReader)
-		if err != nil {
-			return
-		}
-		if strings.HasPrefix(req.URL.Path, "/sub/") {
-			p.admin.ServeSubscriptionHTTP(clientConn, req)
-			return
-		}
+	clientUUID := UUIDToString(header.UUID)
+	log.Printf("[Proxy] Client UUID=%s target=%s", clientUUID, header.TargetAddr())
+
+	activeAddr := p.balancer.GetActive()
+	if activeAddr == "" {
+		log.Printf("[Proxy] No active backend")
 		return
 	}
 
-	peek512, err := bufReader.Peek(512)
-	var backendAddr string
-	if err == nil && peek512[0] == 0x16 {
-		sni, err := extractSNI(peek512)
-		if err == nil && sni != "" {
-			backendAddr = p.routeBySNI(sni)
-			if backendAddr != "" {
-				log.Printf("[Proxy] SNI=%s -> %s", sni, backendAddr)
-			}
-		}
-	}
-
-	if backendAddr == "" {
-		backendAddr = p.balancer.GetActive()
-	}
-	if backendAddr == "" {
+	backend := p.balancer.GetBackendByAddr(activeAddr)
+	if backend == nil {
+		log.Printf("[Proxy] Backend not found for %s", activeAddr)
 		return
 	}
 
-	backendConn := p.dialWithRetry(backendAddr)
-	if backendConn == nil {
+	if backend.UUID == "" {
+		log.Printf("[Proxy] Backend %s has no UUID configured", backend.Name)
+		return
+	}
+
+	var clientRemaining []byte
+	if bufReader.Buffered() > 0 {
+		clientRemaining = make([]byte, bufReader.Buffered())
+		io.ReadFull(bufReader, clientRemaining)
+	}
+
+	err = p.proxyToBackend(header, backend, tlsConn, clientRemaining)
+	if err != nil {
+		log.Printf("[Proxy] Backend error: %v", err)
 		p.metrics.RecordFailure()
-		return
+	}
+}
+
+func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clientConn net.Conn, remaining []byte) error {
+	cfg := &RealityConfig{
+		Addr:        backend.Addr(),
+		SNI:         backend.SNI,
+		PubKey:      backend.RealityPubKey,
+		ShortID:     backend.RealityShortID,
+		SpiderX:     backend.RealitySpiderX,
+		Fingerprint: backend.Fingerprint,
+		Flow:        backend.Flow,
+	}
+
+	backendUUID, err := ParseUUID(backend.UUID)
+	if err != nil {
+		return err
+	}
+
+	backendConn, err := DialReality(cfg)
+	if err != nil {
+		return err
 	}
 	defer backendConn.Close()
 
-	p.proxyBuffers(clientConn, backendConn, bufReader)
-}
+	bw := NewFlushWriter(backendConn)
+	header := &VLESSHeader{
+		Version: 0x00,
+		UUID:    backendUUID,
+		Cmd:     clientHeader.Cmd,
+		Port:    clientHeader.Port,
+		Atyp:    clientHeader.Atyp,
+		Addr:    clientHeader.Addr,
+	}
+	if err := WriteVLESSHeader(bw, header); err != nil {
+		return err
+	}
+	bw.Flush()
 
-func (p *Proxy) dialWithRetry(addr string) net.Conn {
-	timeout := p.config.HealthCheckTimeout
-	if timeout == 0 {
-		timeout = 3 * time.Second
+	if len(remaining) > 0 {
+		backendConn.Write(remaining)
 	}
 
-	retries := p.config.RetryCount
-	if retries <= 0 {
-		retries = 2
-	}
+	log.Printf("[Proxy] Connected to backend %s (%s) for target %s", backend.Name, backend.Addr(), clientHeader.TargetAddr())
 
-	delay := p.config.RetryDelay
-	if delay == 0 {
-		delay = 500 * time.Millisecond
-	}
-
-	conn, err := net.DialTimeout("tcp", addr, timeout)
-	if err == nil {
-		return conn
-	}
-
-	for i := 0; i < retries; i++ {
-		p.metrics.RecordRetry()
-		time.Sleep(delay)
-		conn, err = net.DialTimeout("tcp", addr, timeout)
-		if err == nil {
-			return conn
-		}
-	}
-
-	return nil
-}
-
-func (p *Proxy) proxyBuffers(clientConn net.Conn, backendConn net.Conn, clientBuf *bufio.Reader) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		io.Copy(backendConn, clientBuf)
+		io.Copy(backendConn, clientConn)
 		if tc, ok := backendConn.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
@@ -172,4 +230,31 @@ func (p *Proxy) proxyBuffers(clientConn net.Conn, backendConn net.Conn, clientBu
 	}()
 
 	wg.Wait()
+	return nil
 }
+
+func (p *Proxy) handleHTTPConnection(conn net.Conn) {
+	defer conn.Close()
+
+	bufReader := bufio.NewReader(conn)
+	req, err := http.ReadRequest(bufReader)
+	if err != nil {
+		return
+	}
+
+	if strings.HasPrefix(req.URL.Path, "/sub/") {
+		p.admin.ServeSubscriptionHTTP(conn, req)
+		return
+	}
+
+	w := &httpResponseWriter{conn: conn}
+	http.Error(w, "Not Found", 404)
+}
+
+type httpResponseWriter struct {
+	conn net.Conn
+}
+
+func (w *httpResponseWriter) Header() http.Header         { return http.Header{} }
+func (w *httpResponseWriter) Write(b []byte) (int, error)  { return w.conn.Write(b) }
+func (w *httpResponseWriter) WriteHeader(statusCode int)   {}
