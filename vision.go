@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
+	"log"
 	"net"
+	"sync"
 )
 
 const (
@@ -13,13 +16,15 @@ const (
 )
 
 type VisionConn struct {
-	net.Conn
-	readBuf []byte
-	readPos int
+	reader    io.Reader
+	writer    net.Conn
+	readBuf   []byte
+	readPos   int
+	direction string
 }
 
-func NewVisionConn(conn net.Conn) *VisionConn {
-	return &VisionConn{Conn: conn}
+func NewVisionConn(r io.Reader, w net.Conn, direction string) *VisionConn {
+	return &VisionConn{reader: r, writer: w, direction: direction}
 }
 
 func (vc *VisionConn) Read(p []byte) (int, error) {
@@ -30,8 +35,8 @@ func (vc *VisionConn) Read(p []byte) (int, error) {
 	}
 
 	header := make([]byte, 5)
-	if _, err := io.ReadFull(vc.Conn, header); err != nil {
-		return 0, err
+	if _, err := io.ReadFull(vc.reader, header); err != nil {
+		return 0, fmt.Errorf("[%s] read vision header: %w", vc.direction, err)
 	}
 
 	length := binary.BigEndian.Uint16(header[3:5])
@@ -40,9 +45,11 @@ func (vc *VisionConn) Read(p []byte) (int, error) {
 	}
 
 	payload := make([]byte, length)
-	if _, err := io.ReadFull(vc.Conn, payload); err != nil {
-		return 0, err
+	if _, err := io.ReadFull(vc.reader, payload); err != nil {
+		return 0, fmt.Errorf("[%s] read vision payload: %w", vc.direction, err)
 	}
+
+	log.Printf("[%s] vision read: ct=0x%02x len=%d first_16=%x", vc.direction, header[0], length, payload[:min(len(payload), 16)])
 
 	vc.readBuf = payload
 	vc.readPos = 0
@@ -66,7 +73,7 @@ func (vc *VisionConn) Write(p []byte) (int, error) {
 		binary.BigEndian.PutUint16(buf[3:5], uint16(chunkSize))
 		copy(buf[5:], p[:chunkSize])
 
-		if _, err := vc.Conn.Write(buf); err != nil {
+		if _, err := vc.writer.Write(buf); err != nil {
 			return total, err
 		}
 
@@ -74,4 +81,36 @@ func (vc *VisionConn) Write(p []byte) (int, error) {
 		p = p[chunkSize:]
 	}
 	return total, nil
+}
+
+type vlessResponseConn struct {
+	net.Conn
+	once   sync.Once
+	header []byte
+	err    error
+}
+
+func (c *vlessResponseConn) Read(p []byte) (int, error) {
+	c.once.Do(func() {
+		h := make([]byte, 2)
+		if _, err := io.ReadFull(c.Conn, h); err != nil {
+			c.err = err
+			return
+		}
+		addonLen := int(h[1])
+		if addonLen > 0 {
+			addon := make([]byte, addonLen)
+			if _, err := io.ReadFull(c.Conn, addon); err != nil {
+				c.err = err
+				return
+			}
+			h = append(h, addon...)
+		}
+		c.header = h
+		log.Printf("[Proxy] Backend VLESS response header (%d bytes): %x", len(h), h)
+	})
+	if c.err != nil {
+		return 0, c.err
+	}
+	return c.Conn.Read(p)
 }

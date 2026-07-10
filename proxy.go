@@ -185,15 +185,21 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 	defer backendConn.Close()
 
 	bw := NewFlushWriter(backendConn)
+
+	flowAddon := encodeFlowAddon(backend.Flow)
+
 	header := &VLESSHeader{
 		Version: 0x00,
 		UUID:    backendUUID,
-		Addon:   clientHeader.Addon,
+		Addon:   flowAddon,
 		Cmd:     clientHeader.Cmd,
 		Port:    clientHeader.Port,
 		Atyp:    clientHeader.Atyp,
 		Addr:    clientHeader.Addr,
 	}
+
+	log.Printf("[Proxy] Backend VLESS: uuid=%s addon=%d bytes addon_hex=%x cmd=%d atyp=%d port=%d addr=%x flow=%s",
+		backend.UUID, len(flowAddon), flowAddon, header.Cmd, header.Atyp, header.Port, header.Addr, backend.Flow)
 	if err := WriteVLESSHeader(bw, header); err != nil {
 		return err
 	}
@@ -201,7 +207,8 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 
 	log.Printf("[Proxy] Connected to backend %s (%s) for target %s", backend.Name, backend.Addr(), clientHeader.TargetAddr())
 
-	visionBackend := NewVisionConn(backendConn)
+	responseConn := &vlessResponseConn{Conn: backendConn}
+	visionBackend := NewVisionConn(responseConn, backendConn, "relay")
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -210,15 +217,21 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(visionBackend, clientReader)
+		n, err := io.Copy(visionBackend, clientReader)
 		atomic.AddInt64(&clientToBackend, n)
+		if err != nil {
+			log.Printf("[Proxy] C2B copy error: %v (wrote %d)", err, n)
+		}
 		backendConn.Close()
 	}()
 
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(clientConn, visionBackend)
+		n, err := io.Copy(clientConn, visionBackend)
 		atomic.AddInt64(&backendToClient, n)
+		if err != nil {
+			log.Printf("[Proxy] B2C copy error: %v (wrote %d)", err, n)
+		}
 		clientConn.Close()
 	}()
 

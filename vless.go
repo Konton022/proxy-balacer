@@ -133,6 +133,15 @@ func WriteVLESSHeader(w io.Writer, h *VLESSHeader) error {
 	return nil
 }
 
+func encodeFlowAddon(flow string) []byte {
+	if flow == "" {
+		return nil
+	}
+	tag := byte(0x0a)
+	length := byte(len(flow))
+	return append([]byte{tag, length}, []byte(flow)...)
+}
+
 func (h *VLESSHeader) TargetAddr() string {
 	switch h.Atyp {
 	case VLESS_ATYP_IPV4:
