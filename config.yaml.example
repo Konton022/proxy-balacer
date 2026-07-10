@@ -1,0 +1,39 @@
+# Proxy Balancer Configuration
+# Copy this file to config.yaml and fill in your values
+
+# Proxy listener
+listen_addr: "0.0.0.0"
+listen_port: 8443
+public_host: "your-domain.com"
+
+# Backend servers (seeded to DB on first run)
+backends:
+  - name: "backend-1"
+    sub_url: "https://your-3x-ui-panel.com:2096/sub-client-link/YOUR_TOKEN"
+    primary: true
+  - name: "backend-2"
+    sub_url: "https://your-second-panel.com:2096/sub-client-link/YOUR_TOKEN"
+    primary: false
+
+# Health checking
+health_check_interval: 10s
+health_check_timeout: 3s
+failback: true
+
+# Retry settings
+retry_count: 2
+retry_delay: 500ms
+
+# Admin panel
+admin_enabled: true
+admin_listen: "0.0.0.0"
+admin_port: 8080
+admin_user: "admin"
+admin_password: "CHANGE_ME"
+admin_secret: "change-me-to-random-string"
+db_path: "/opt/proxy-balancer/balancer.db"
+
+# TLS (for admin panel; proxy traffic uses backend TLS passthrough)
+tls_enabled: true
+tls_cert_file: "/etc/letsencrypt/live/your-domain.com/fullchain.pem"
+tls_key_file: "/etc/letsencrypt/live/your-domain.com/privkey.pem"

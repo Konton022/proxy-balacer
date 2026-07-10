@@ -1,0 +1,28 @@
+# Binaries
+proxy-balancer
+proxy-balancer.old
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+*.secret
+
+# TLS certificates (use Let's Encrypt or your own)
+*.crt
+*.key
+*.pem
+
+# Config with real credentials
+config.yaml
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Go
+vendor/

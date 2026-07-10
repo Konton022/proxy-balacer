@@ -1,0 +1,57 @@
+{{define "clients_content"}}
+<div class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-between mb-6">
+        <h2 class="text-2xl font-bold text-white">Clients</h2>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm" onclick="document.getElementById('addForm').classList.toggle('hidden')">+ Add Client</button>
+    </div>
+
+    <div id="addForm" class="hidden bg-gray-800 rounded-lg border border-gray-700 p-5 mb-6">
+        <h3 class="text-lg font-semibold text-white mb-4">New Client</h3>
+        <form method="POST" action="/clients">
+            <input type="hidden" name="csrf_token" value="{{.csrf_token}}">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-gray-300 text-sm mb-1">Name</label>
+                    <input class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm" type="text" name="name" placeholder="John Doe" required>
+                </div>
+                <div>
+                    <label class="block text-gray-300 text-sm mb-1">Email (optional)</label>
+                    <input class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm" type="email" name="email" placeholder="john@example.com">
+                </div>
+            </div>
+            <button class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm" type="submit">Save</button>
+        </form>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+        <table class="w-full">
+            <thead>
+                <tr class="bg-gray-700/50">
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Name</th>
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Email</th>
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Status</th>
+                    <th class="text-right px-4 py-3 text-gray-300 text-xs uppercase">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .clients}}
+                <tr class="border-t border-gray-700 hover:bg-gray-700/50">
+                    <td class="px-4 py-3 text-white text-sm">{{.Name}}</td>
+                    <td class="px-4 py-3 text-gray-300 text-sm">{{.Email}}</td>
+                    <td class="px-4 py-3 text-sm">
+                        {{if .Enabled}}<span class="text-green-400">Active</span>{{else}}<span class="text-red-400">Disabled</span>{{end}}
+                    </td>
+                    <td class="px-4 py-3 text-right">
+                        <button class="text-red-400 hover:text-red-300 text-sm" hx-delete="/clients/{{.ID}}" hx-confirm="Delete this client?" hx-target="closest tr" hx-swap="delete" hx-headers='{"X-CSRF-Token":"{{$.csrf_token}}"}'>Delete</button>
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="4" class="px-4 py-8 text-center text-gray-500">No clients added yet</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}

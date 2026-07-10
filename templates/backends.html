@@ -1,0 +1,82 @@
+{{define "backends_content"}}
+<div class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-between mb-6">
+        <h2 class="text-2xl font-bold text-white">Backends</h2>
+        <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm" onclick="document.getElementById('addForm').classList.toggle('hidden')">+ Add Backend</button>
+    </div>
+
+    <div id="addForm" class="hidden bg-gray-800 rounded-lg border border-gray-700 p-5 mb-6">
+        <h3 class="text-lg font-semibold text-white mb-4">Add Backend via Subscription URL</h3>
+        <p class="text-gray-400 text-sm mb-4">All server data (host, port, SNI) will be extracted automatically from the subscription.</p>
+        <form method="POST" action="/backends">
+            <input type="hidden" name="csrf_token" value="{{.csrf_token}}">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-gray-300 text-sm mb-1">Name</label>
+                    <input class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm" type="text" name="name" placeholder="Germany" required>
+                </div>
+                <div>
+                    <label class="block text-gray-300 text-sm mb-1">Subscription URL</label>
+                    <input class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white text-sm" type="url" name="sub_url" placeholder="https://host:port/sub/uuid" required>
+                </div>
+                <div class="flex items-end">
+                    <label class="flex items-center space-x-2 text-gray-300 text-sm">
+                        <input type="checkbox" name="primary" class="rounded bg-gray-700 border-gray-600">
+                        <span>Primary backend (failback target)</span>
+                    </label>
+                </div>
+            </div>
+            <button class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm" type="submit">Fetch & Add</button>
+        </form>
+    </div>
+
+    <h3 class="text-lg font-semibold text-white mb-3">Backends</h3>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+        <table class="w-full">
+            <thead>
+                <tr class="bg-gray-700/50">
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Name</th>
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Server</th>
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Configs</th>
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Last Fetch</th>
+                    <th class="text-left px-4 py-3 text-gray-300 text-xs uppercase">Status</th>
+                    <th class="text-right px-4 py-3 text-gray-300 text-xs uppercase">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .backends}}
+                <tr class="border-t border-gray-700 hover:bg-gray-700/50">
+                    <td class="px-4 py-3 text-white text-sm">
+                        {{.Name}}
+                        {{if .Primary}}<span class="ml-1 text-yellow-400 text-xs">PRIMARY</span>{{end}}
+                    </td>
+                    <td class="px-4 py-3 text-gray-300 text-sm font-mono">{{if .Host}}{{.Host}}:{{.Port}}{{else}}<span class="text-gray-500">pending fetch</span>{{end}}</td>
+                    <td class="px-4 py-3 text-gray-300 text-sm">{{.ConfigCount}}</td>
+                    <td class="px-4 py-3 text-gray-300 text-sm">{{if not .LastFetch.IsZero}}{{.LastFetch.Format "Jan 02 15:04"}}{{else}}-{{end}}</td>
+                    <td class="px-4 py-3 text-sm">
+                        {{if .Enabled}}<span class="text-green-400">Enabled</span>{{else}}<span class="text-red-400">Disabled</span>{{end}}
+                    </td>
+                    <td class="px-4 py-3 text-right">
+                        <form method="POST" action="/backends/{{.ID}}/refetch" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{$.csrf_token}}">
+                            <button class="text-blue-400 hover:text-blue-300 text-sm mr-2" type="submit">Refetch</button>
+                        </form>
+                        <form method="POST" action="/backends/{{.ID}}/toggle" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{$.csrf_token}}">
+                            <button class="text-yellow-400 hover:text-yellow-300 text-sm mr-2" type="submit">
+                                {{if .Enabled}}Disable{{else}}Enable{{end}}
+                            </button>
+                        </form>
+                        <button class="text-red-400 hover:text-red-300 text-sm" hx-delete="/backends/{{.ID}}" hx-confirm="Delete this backend?" hx-target="closest tr" hx-swap="delete" hx-headers='{"X-CSRF-Token":"{{$.csrf_token}}"}'>Delete</button>
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="6" class="px-4 py-8 text-center text-gray-500">No backends added yet. Add a subscription URL to get started.</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}

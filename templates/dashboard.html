@@ -1,0 +1,167 @@
+{{define "dashboard_content"}}
+<div class="max-w-6xl mx-auto">
+    <h2 class="text-2xl font-bold text-white mb-6">Dashboard</h2>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <div class="text-gray-400 text-sm">Backends</div>
+            <div class="text-3xl font-bold text-white mt-1">{{.backend_count}}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <div class="text-gray-400 text-sm">Configs</div>
+            <div class="text-3xl font-bold text-white mt-1">{{.config_count}}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <div class="text-gray-400 text-sm">Clients</div>
+            <div class="text-3xl font-bold text-white mt-1">{{.client_count}}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <div class="text-gray-400 text-sm">Subscriptions</div>
+            <div class="text-3xl font-bold text-white mt-1">{{.sub_count}}</div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <h3 class="text-lg font-semibold text-white mb-3">Backend Status</h3>
+            <div class="space-y-2">
+                {{range .backends}}
+                <div class="flex items-center justify-between py-2 border-b border-gray-700 last:border-0">
+                    <div class="flex items-center">
+                        {{if .Up}}
+                        <span class="w-2 h-2 bg-green-400 rounded-full mr-2"></span>
+                        {{else}}
+                        <span class="w-2 h-2 bg-red-400 rounded-full mr-2"></span>
+                        {{end}}
+                        <span class="text-white text-sm">{{.Name}}</span>
+                        {{if .Primary}}<span class="ml-2 text-xs bg-blue-600 text-white px-2 py-0.5 rounded">PRIMARY</span>{{end}}
+                    </div>
+                    <div class="flex items-center">
+                        <span class="text-gray-400 font-mono text-xs mr-3">{{.Addr}}</span>
+                        {{if .Up}}
+                        <span class="text-green-400 text-xs">UP</span>
+                        {{else}}
+                        <span class="text-red-400 text-xs">DOWN</span>
+                        {{end}}
+                    </div>
+                </div>
+                {{else}}
+                <div class="text-gray-500 text-sm">No backends configured</div>
+                {{end}}
+            </div>
+            <div class="mt-4 flex items-center justify-between">
+                <div>
+                    <span class="text-gray-400 text-sm">Active: </span>
+                    <span class="text-green-400 font-mono text-sm">{{.active_server}}</span>
+                </div>
+                <a href="/backends" class="text-blue-400 hover:text-blue-300 text-sm">Manage &rarr;</a>
+            </div>
+        </div>
+
+        {{if .metrics}}
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <h3 class="text-lg font-semibold text-white mb-3">Proxy Metrics</h3>
+            <div class="space-y-2">
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Uptime</span>
+                    <span class="text-white font-mono text-sm">{{index .metrics "uptime"}}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Connections/min</span>
+                    <span class="text-white font-mono text-sm">{{index .metrics "conns_per_minute"}}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Total connections</span>
+                    <span class="text-white font-mono text-sm">{{index .metrics "total_connections"}}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Active connections</span>
+                    <span class="text-green-400 font-mono text-sm">{{index .metrics "active_connections"}}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Failed connections</span>
+                    <span class="text-red-400 font-mono text-sm">{{index .metrics "failed_connections"}}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Retries</span>
+                    <span class="text-yellow-400 font-mono text-sm">{{index .metrics "retried_connections"}}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Failovers</span>
+                    <span class="text-orange-400 font-mono text-sm">{{index .metrics "failover_count"}}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-gray-400">Failbacks</span>
+                    <span class="text-blue-400 font-mono text-sm">{{index .metrics "failback_count"}}</span>
+                </div>
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-lg font-semibold text-white">Clients</h3>
+                <a href="/clients" class="text-blue-400 hover:text-blue-300 text-sm">Manage &rarr;</a>
+            </div>
+            <div class="space-y-2">
+                {{range .clients}}
+                <div class="flex items-center justify-between py-2 border-b border-gray-700 last:border-0">
+                    <div class="flex items-center">
+                        {{if .Enabled}}
+                        <span class="w-2 h-2 bg-green-400 rounded-full mr-2"></span>
+                        {{else}}
+                        <span class="w-2 h-2 bg-gray-500 rounded-full mr-2"></span>
+                        {{end}}
+                        <span class="text-white text-sm">{{.Name}}</span>
+                    </div>
+                    <div class="flex items-center">
+                        <span class="text-gray-400 text-xs mr-3">{{.Email}}</span>
+                        {{if .Enabled}}
+                        <span class="text-green-400 text-xs">ACTIVE</span>
+                        {{else}}
+                        <span class="text-gray-500 text-xs">DISABLED</span>
+                        {{end}}
+                    </div>
+                </div>
+                {{else}}
+                <div class="text-gray-500 text-sm">No clients yet</div>
+                {{end}}
+            </div>
+        </div>
+
+        <div class="bg-gray-800 rounded-lg border border-gray-700 p-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-lg font-semibold text-white">Subscriptions</h3>
+                <a href="/subscriptions" class="text-blue-400 hover:text-blue-300 text-sm">Manage &rarr;</a>
+            </div>
+            <div class="space-y-2">
+                {{range .subscriptions}}
+                <div class="flex items-center justify-between py-2 border-b border-gray-700 last:border-0">
+                    <div class="flex items-center">
+                        {{if .Enabled}}
+                        <span class="w-2 h-2 bg-green-400 rounded-full mr-2"></span>
+                        {{else}}
+                        <span class="w-2 h-2 bg-gray-500 rounded-full mr-2"></span>
+                        {{end}}
+                        <span class="text-white text-sm">{{.Name}}</span>
+                    </div>
+                    <div class="flex items-center">
+                        <span class="text-gray-400 text-xs mr-3">{{.ClientName}}</span>
+                        <span class="text-gray-400 text-xs mr-3">{{.ConfigCount}} configs</span>
+                        {{if .Enabled}}
+                        <span class="text-green-400 text-xs">ACTIVE</span>
+                        {{else}}
+                        <span class="text-gray-500 text-xs">DISABLED</span>
+                        {{end}}
+                    </div>
+                </div>
+                {{else}}
+                <div class="text-gray-500 text-sm">No subscriptions yet</div>
+                {{end}}
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
