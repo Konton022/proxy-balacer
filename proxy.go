@@ -155,20 +155,14 @@ func (p *Proxy) handleTLSConnection(conn net.Conn) {
 		return
 	}
 
-	var clientRemaining []byte
-	if bufReader.Buffered() > 0 {
-		clientRemaining = make([]byte, bufReader.Buffered())
-		io.ReadFull(bufReader, clientRemaining)
-	}
-
-	err = p.proxyToBackend(header, backend, tlsConn, clientRemaining)
+	err = p.proxyToBackend(header, backend, bufReader, tlsConn)
 	if err != nil {
 		log.Printf("[Proxy] Backend error: %v", err)
 		p.metrics.RecordFailure()
 	}
 }
 
-func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clientConn net.Conn, remaining []byte) error {
+func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clientReader *bufio.Reader, clientConn net.Conn) error {
 	cfg := &RealityConfig{
 		Addr:        backend.Addr(),
 		SNI:         backend.SNI,
@@ -205,32 +199,31 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 	}
 	bw.Flush()
 
-	if len(remaining) > 0 {
-		backendConn.Write(remaining)
-	}
-
 	log.Printf("[Proxy] Connected to backend %s (%s) for target %s", backend.Name, backend.Addr(), clientHeader.TargetAddr())
+
+	visionBackend := NewVisionConn(backendConn)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	var clientToBackend, backendToClient int64
+
 	go func() {
 		defer wg.Done()
-		io.Copy(backendConn, clientConn)
-		if tc, ok := backendConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
+		n, _ := io.Copy(visionBackend, clientReader)
+		atomic.AddInt64(&clientToBackend, n)
+		backendConn.Close()
 	}()
 
 	go func() {
 		defer wg.Done()
-		io.Copy(clientConn, backendConn)
-		if tc, ok := clientConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
+		n, _ := io.Copy(clientConn, visionBackend)
+		atomic.AddInt64(&backendToClient, n)
+		clientConn.Close()
 	}()
 
 	wg.Wait()
+	log.Printf("[Proxy] Relay done: client→backend=%d bytes, backend→client=%d bytes, target=%s", clientToBackend, backendToClient, clientHeader.TargetAddr())
 	return nil
 }
 

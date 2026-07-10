@@ -715,7 +715,7 @@ func (a *AdminServer) subscriptionEndpoint(w http.ResponseWriter, r *http.Reques
 		proxyUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	}
 
-	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp#Balancer",
+	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp&flow=xtls-rprx-vision#Balancer",
 		proxyUUID, balancerHost, a.config.ListenPort, balancerHost)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -749,7 +749,7 @@ func (a *AdminServer) ServeSubscriptionHTTP(conn net.Conn, req *http.Request) {
 		proxyUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	}
 
-	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp#Balancer",
+	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp&flow=xtls-rprx-vision#Balancer",
 		proxyUUID, balancerHost, a.config.ListenPort, balancerHost)
 
 	resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store, must-revalidate\r\nContent-Length: %d\r\nSubscription-Userinfo: upload=0; download=0; total=0; expire=0\r\n\r\n%s", len(link), link)
