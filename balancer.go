@@ -17,6 +17,9 @@ type Balancer struct {
 	currentAddr string
 	backends    []Backend
 	metrics     *Metrics
+
+	manualMode    bool
+	manualAddr    string
 }
 
 func NewBalancer(db *gorm.DB, cfg *Config) *Balancer {
@@ -69,7 +72,7 @@ func (b *Balancer) checkSubscriptions() {
 		} else if !prevUp {
 			log.Printf("[Health] %s subscription UP", be.Name)
 			b.health.SetStatus(be.Addr(), true)
-			if b.config.Failback {
+			if b.config.Failback && !b.manualMode {
 				b.tryFailback()
 			}
 		}
@@ -78,6 +81,9 @@ func (b *Balancer) checkSubscriptions() {
 
 func (b *Balancer) Start(ctx context.Context) {
 	onChange := func(addr string, up bool) {
+		if b.manualMode {
+			return
+		}
 		if up && b.config.Failback {
 			b.tryFailback()
 		}
@@ -97,7 +103,7 @@ func (b *Balancer) Start(ctx context.Context) {
 
 	b.checkSubscriptions()
 	b.selectInitial()
-	log.Printf("[Balancer] Initial active server: %s", b.GetActive())
+	log.Printf("[Balancer] Initial active server: %s (manual=%v)", b.GetActive(), b.manualMode)
 
 	go func() {
 		time.Sleep(b.config.HealthCheckInterval)
@@ -111,6 +117,9 @@ func (b *Balancer) Start(ctx context.Context) {
 			case <-ticker.C:
 				b.Reload()
 				b.checkSubscriptions()
+				if !b.manualMode {
+					b.selectBest()
+				}
 			}
 		}
 	}()
@@ -122,34 +131,104 @@ func (b *Balancer) GetActive() string {
 	return b.currentAddr
 }
 
-func (b *Balancer) selectInitial() {
+func (b *Balancer) IsManual() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	return b.manualMode
+}
 
+func (b *Balancer) GetManualAddr() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.manualAddr
+}
+
+func (b *Balancer) SetManual(addr string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if addr == "" {
+		b.manualMode = false
+		b.manualAddr = ""
+		log.Printf("[Balancer] Switched to AUTO mode")
+		b.selectBestUnlocked()
+		return
+	}
+
+	b.manualMode = true
+	b.manualAddr = addr
+	b.currentAddr = addr
+	log.Printf("[Balancer] Manual switch to %s", addr)
+}
+
+func (b *Balancer) GetAllAddrPing() map[string]int64 {
+	b.mu.RLock()
+	backends := make([]Backend, len(b.backends))
+	copy(backends, b.backends)
+	b.mu.RUnlock()
+
+	result := make(map[string]int64)
+	for _, be := range backends {
+		result[be.Addr()] = b.health.GetPing(be.Addr())
+	}
+	return result
+}
+
+func (b *Balancer) selectInitial() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	best := b.health.BestUp(b.allAddrsUnlocked())
+	if best != "" {
+		b.currentAddr = best
+		return
+	}
+
+	addrs := b.allAddrsUnlocked()
+	if len(addrs) > 0 {
+		b.currentAddr = addrs[0]
+	}
+}
+
+func (b *Balancer) selectBest() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.selectBestUnlocked()
+}
+
+func (b *Balancer) selectBestUnlocked() {
+	if b.manualMode {
+		return
+	}
+	best := b.health.BestUp(b.allAddrsUnlocked())
+	if best != "" && best != b.currentAddr {
+		log.Printf("[Balancer] Best server changed: %s -> %s (ping-based)", b.currentAddr, best)
+		b.currentAddr = best
+	}
+}
+
+func (b *Balancer) allAddrsUnlocked() []string {
+	var addrs []string
 	for _, be := range b.backends {
-		if b.health.IsUp(be.Addr()) {
-			b.currentAddr = be.Addr()
-			return
-		}
+		addrs = append(addrs, be.Addr())
 	}
-
-	if len(b.backends) > 0 {
-		b.currentAddr = b.backends[0].Addr()
-	}
+	return addrs
 }
 
 func (b *Balancer) failover() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for _, be := range b.backends {
-		addr := be.Addr()
-		if addr != b.currentAddr && b.health.IsUp(addr) {
-			log.Printf("[Balancer] Failover: switching from %s to %s", b.currentAddr, addr)
-			b.currentAddr = addr
-			b.metrics.RecordFailover()
-			return
-		}
+	if b.manualMode {
+		return
+	}
+
+	best := b.health.BestUp(b.allAddrsUnlocked())
+	if best != "" && best != b.currentAddr {
+		log.Printf("[Balancer] Failover: switching from %s to %s", b.currentAddr, best)
+		b.currentAddr = best
+		b.metrics.RecordFailover()
+		return
 	}
 	log.Printf("[Balancer] No healthy backends to failover to")
 }
@@ -169,11 +248,15 @@ func (b *Balancer) IsUp(addr string) bool {
 	return b.health.IsUp(addr)
 }
 
+func (b *Balancer) GetPing(addr string) int64 {
+	return b.health.GetPing(addr)
+}
+
 func (b *Balancer) tryFailback() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.config.Failback {
+	if !b.config.Failback || b.manualMode {
 		return
 	}
 

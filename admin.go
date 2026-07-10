@@ -201,6 +201,8 @@ func (a *AdminServer) router(w http.ResponseWriter, r *http.Request) {
 		a.toggleBackend(w, r, path)
 	case strings.HasPrefix(path, "/backends/") && method == "DELETE":
 		a.deleteBackend(w, r, path)
+	case path == "/active-server" && method == "POST":
+		a.setActiveServer(w, r)
 	case path == "/clients" && method == "GET":
 		a.clientsPage(w, r)
 	case path == "/clients" && method == "POST":
@@ -329,6 +331,7 @@ func (a *AdminServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		Addr    string
 		Primary bool
 		Up      bool
+		Ping    int64
 		Configs int
 	}
 	var backends []BackendStatus
@@ -342,13 +345,16 @@ func (a *AdminServer) dashboard(w http.ResponseWriter, r *http.Request) {
 			Addr:    be.Addr(),
 			Primary: be.Primary,
 			Up:      a.balancer.IsUp(be.Addr()),
+			Ping:    a.balancer.GetPing(be.Addr()),
 			Configs: int(cfgCount),
 		})
 	}
 
 	activeServer := ""
+	isManual := false
 	if a.balancer != nil {
 		activeServer = a.balancer.GetActive()
+		isManual = a.balancer.IsManual()
 	}
 
 	var metrics map[string]interface{}
@@ -384,6 +390,7 @@ func (a *AdminServer) dashboard(w http.ResponseWriter, r *http.Request) {
 		"sub_count":     subCount,
 		"config_count":  configCount,
 		"active_server": activeServer,
+		"is_manual":     isManual,
 		"metrics":       metrics,
 		"backends":      backends,
 		"clients":       clients,
@@ -531,6 +538,12 @@ func (a *AdminServer) deleteBackend(w http.ResponseWriter, r *http.Request, path
 	a.db.Delete(&Backend{}, id)
 	a.balancer.Reload()
 	w.WriteHeader(200)
+}
+
+func (a *AdminServer) setActiveServer(w http.ResponseWriter, r *http.Request) {
+	addr := r.FormValue("addr")
+	a.balancer.SetManual(addr)
+	http.Redirect(w, r, "/", 302)
 }
 
 func (a *AdminServer) clientsPage(w http.ResponseWriter, r *http.Request) {
