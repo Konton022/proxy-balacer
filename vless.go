@@ -20,6 +20,7 @@ const (
 type VLESSHeader struct {
 	Version byte
 	UUID    [16]byte
+	Addon   []byte
 	Cmd     byte
 	Port    uint16
 	Atyp    byte
@@ -65,9 +66,9 @@ func ReadVLESSHeader(r io.Reader) (*VLESSHeader, error) {
 		return nil, fmt.Errorf("read addon len: %w", err)
 	}
 	if addonLen > 0 {
-		skip := make([]byte, addonLen)
-		if _, err := io.ReadFull(r, skip); err != nil {
-			return nil, fmt.Errorf("skip addon: %w", err)
+		h.Addon = make([]byte, addonLen)
+		if _, err := io.ReadFull(r, h.Addon); err != nil {
+			return nil, fmt.Errorf("read addon: %w", err)
 		}
 	}
 
@@ -113,7 +114,11 @@ func ReadVLESSHeader(r io.Reader) (*VLESSHeader, error) {
 func WriteVLESSHeader(w io.Writer, h *VLESSHeader) error {
 	binary.Write(w, binary.BigEndian, h.Version)
 	binary.Write(w, binary.BigEndian, h.UUID)
-	binary.Write(w, binary.BigEndian, byte(0))
+	addonLen := byte(len(h.Addon))
+	binary.Write(w, binary.BigEndian, addonLen)
+	if len(h.Addon) > 0 {
+		binary.Write(w, binary.BigEndian, h.Addon)
+	}
 	binary.Write(w, binary.BigEndian, h.Cmd)
 	binary.Write(w, binary.BigEndian, h.Port)
 	binary.Write(w, binary.BigEndian, h.Atyp)

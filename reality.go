@@ -164,7 +164,7 @@ func DialReality(cfg *RealityConfig) (net.Conn, error) {
 	}
 
 	log.Printf("[Reality] Connected to %s (SNI=%s)", cfg.Addr, cfg.SNI)
-	return uconn.Conn, nil
+	return uconn, nil
 }
 
 func ProxyToBackend(clientHeader *VLESSHeader, clientReader io.Reader, clientWriter io.Writer, backend *Backend, proxyUUID string) error {
@@ -193,6 +193,7 @@ func ProxyToBackend(clientHeader *VLESSHeader, clientReader io.Reader, clientWri
 	header := &VLESSHeader{
 		Version: 0x00,
 		UUID:    backendUUID,
+		Addon:   clientHeader.Addon,
 		Cmd:     clientHeader.Cmd,
 		Port:    clientHeader.Port,
 		Atyp:    clientHeader.Atyp,

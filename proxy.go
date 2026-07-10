@@ -194,6 +194,7 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 	header := &VLESSHeader{
 		Version: 0x00,
 		UUID:    backendUUID,
+		Addon:   clientHeader.Addon,
 		Cmd:     clientHeader.Cmd,
 		Port:    clientHeader.Port,
 		Atyp:    clientHeader.Atyp,
