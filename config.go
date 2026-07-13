@@ -44,6 +44,10 @@ type Config struct {
 	TLSCertFile string `yaml:"tls_cert_file"`
 
 	ProxyUUID string `yaml:"proxy_uuid"`
+
+	RawRelay bool `yaml:"raw_relay"`
+
+	TestTarget string `yaml:"test_target"`
 }
 
 func LoadConfig(path string) (*Config, error) {

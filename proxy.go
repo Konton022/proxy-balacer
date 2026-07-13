@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -124,11 +126,17 @@ func (p *Proxy) handleTLSConnection(conn net.Conn) {
 
 	tlsConn := tls.Server(conn, p.tlsCfg)
 	if err := tlsConn.Handshake(); err != nil {
+		log.Printf("[Proxy] TLS handshake error: %v", err)
 		return
 	}
 	defer tlsConn.Close()
+	log.Printf("[Proxy] TLS handshake OK from %s (state=%d version=%x)", tlsConn.RemoteAddr(), tlsConn.ConnectionState().HandshakeComplete, tlsConn.ConnectionState().Version)
 
 	bufReader := bufio.NewReader(tlsConn)
+
+	peek, _ := bufReader.Peek(64)
+	log.Printf("[Proxy] Client data after TLS (%d bytes peek):\n%s", len(peek), hex.Dump(peek))
+
 	header, err := ReadVLESSHeader(bufReader)
 	if err != nil {
 		log.Printf("[Proxy] VLESS header error: %v", err)
@@ -184,7 +192,9 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 	}
 	defer backendConn.Close()
 
-	bw := NewFlushWriter(backendConn)
+	debugBackend := &DebugConn{Conn: backendConn, direction: "BACKEND"}
+
+	bw := NewFlushWriter(debugBackend)
 
 	flowAddon := encodeFlowAddon(backend.Flow)
 
@@ -198,8 +208,51 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 		Addr:    clientHeader.Addr,
 	}
 
-	log.Printf("[Proxy] Backend VLESS: uuid=%s addon=%d bytes addon_hex=%x cmd=%d atyp=%d port=%d addr=%x flow=%s",
-		backend.UUID, len(flowAddon), flowAddon, header.Cmd, header.Atyp, header.Port, header.Addr, backend.Flow)
+	log.Printf("[Proxy] Backend VLESS: uuid=%s addon=%d bytes cmd=%d atyp=%d port=%d addr=%x flow=%s",
+		backend.UUID, len(flowAddon), header.Cmd, header.Atyp, header.Port, header.Addr, backend.Flow)
+
+	// Test target override
+	if p.config.TestTarget != "" {
+		log.Printf("[Proxy] TEST MODE: overriding target %s with %s", clientHeader.TargetAddr(), p.config.TestTarget)
+		host, portStr, _ := net.SplitHostPort(p.config.TestTarget)
+		port := uint16(0)
+		fmt.Sscanf(portStr, "%d", &port)
+		header.Port = port
+		if ip := net.ParseIP(host); ip != nil {
+			if ip4 := ip.To4(); ip4 != nil {
+				header.Atyp = VLESS_ATYP_IPV4
+				header.Addr = []byte(ip4)
+			} else {
+				header.Atyp = VLESS_ATYP_IPV6
+				header.Addr = []byte(ip)
+			}
+		} else {
+			header.Atyp = VLESS_ATYP_DOMAIN
+			header.Addr = []byte(host)
+		}
+	}
+
+	// Log exact VLESS header bytes for debugging
+	{
+		var hdrBuf [64]byte
+		hdrN := 0
+		hdrBuf[hdrN] = header.Version; hdrN++
+		copy(hdrBuf[hdrN:hdrN+16], header.UUID[:]); hdrN += 16
+		hdrBuf[hdrN] = byte(len(header.Addon)); hdrN++
+		if len(header.Addon) > 0 {
+			copy(hdrBuf[hdrN:hdrN+len(header.Addon)], header.Addon)
+			hdrN += len(header.Addon)
+		}
+		hdrBuf[hdrN] = header.Cmd; hdrN++
+		hdrBuf[hdrN] = byte(header.Port >> 8); hdrN++
+		hdrBuf[hdrN] = byte(header.Port); hdrN++
+		hdrBuf[hdrN] = header.Atyp; hdrN++
+		hdrBuf[hdrN] = byte(len(header.Addr)); hdrN++
+		copy(hdrBuf[hdrN:hdrN+len(header.Addr)], header.Addr)
+		hdrN += len(header.Addr)
+		log.Printf("[Proxy] VLESS header wire bytes (%d):\n%s", hdrN, hex.Dump(hdrBuf[:hdrN]))
+	}
+
 	if err := WriteVLESSHeader(bw, header); err != nil {
 		return err
 	}
@@ -207,33 +260,64 @@ func (p *Proxy) proxyToBackend(clientHeader *VLESSHeader, backend *Backend, clie
 
 	log.Printf("[Proxy] Connected to backend %s (%s) for target %s", backend.Name, backend.Addr(), clientHeader.TargetAddr())
 
-	responseConn := &vlessResponseConn{Conn: backendConn}
-	visionBackend := NewVisionConn(responseConn, backendConn, "relay")
+	responseConn := &vlessResponseConn{Conn: debugBackend}
+
+	debugClient := &DebugConn{Conn: clientConn, direction: "CLIENT"}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	var clientToBackend, backendToClient int64
 
-	go func() {
-		defer wg.Done()
-		n, err := io.Copy(visionBackend, clientReader)
-		atomic.AddInt64(&clientToBackend, n)
-		if err != nil {
-			log.Printf("[Proxy] C2B copy error: %v (wrote %d)", err, n)
-		}
-		backendConn.Close()
-	}()
+	backendHasVision := strings.Contains(backend.Flow, "xtls-rprx-vision")
 
-	go func() {
-		defer wg.Done()
-		n, err := io.Copy(clientConn, visionBackend)
-		atomic.AddInt64(&backendToClient, n)
-		if err != nil {
-			log.Printf("[Proxy] B2C copy error: %v (wrote %d)", err, n)
-		}
-		clientConn.Close()
-	}()
+	if backendHasVision {
+		log.Printf("[Proxy] Backend %s uses Vision relay (flow=%s)", backend.Name, backend.Flow)
+		go func() {
+			defer wg.Done()
+			defer debugBackend.Close()
+			relay := NewVisionRelay(clientReader, debugBackend, "C2B", p.proxyUUID, backendUUID)
+			n, err := relay.Relay()
+			atomic.AddInt64(&clientToBackend, n)
+			if err != nil {
+				log.Printf("[Proxy] C2B error: %v (wrote %d)", err, n)
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			defer debugClient.Close()
+			relay := NewVisionRelay(responseConn, debugClient, "B2C", backendUUID, p.proxyUUID)
+			n, err := relay.Relay()
+			atomic.AddInt64(&backendToClient, n)
+			if err != nil {
+				log.Printf("[Proxy] B2C error: %v (wrote %d)", err, n)
+			}
+		}()
+	} else {
+		log.Printf("[Proxy] Backend %s has no Vision — using VisionReader(C2B)+VisionWriter(B2C)", backend.Name)
+		go func() {
+			defer wg.Done()
+			defer debugBackend.Close()
+			vr := NewVisionReader(clientReader, "C2B", p.proxyUUID)
+			n, err := io.Copy(debugBackend, vr)
+			atomic.StoreInt64(&clientToBackend, n)
+			if err != nil {
+				log.Printf("[Proxy] C2B no-vision error: %v (wrote %d)", err, n)
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			defer debugClient.Close()
+			vw := NewVisionWriter(debugClient, "B2C", p.proxyUUID)
+			n, err := io.Copy(vw, responseConn)
+			atomic.StoreInt64(&backendToClient, n)
+			if err != nil {
+				log.Printf("[Proxy] B2C no-vision error: %v (wrote %d)", err, n)
+			}
+		}()
+	}
 
 	wg.Wait()
 	log.Printf("[Proxy] Relay done: client→backend=%d bytes, backend→client=%d bytes, target=%s", clientToBackend, backendToClient, clientHeader.TargetAddr())

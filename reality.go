@@ -1,10 +1,8 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -55,26 +53,6 @@ func buildClientHelloID(fp string) utls.ClientHelloID {
 	}
 }
 
-type realityExtension struct {
-	shortID  [8]byte
-	pubKey   [32]byte
-	spiderX  string
-}
-
-func (e *realityExtension) Len() int {
-	return 8 + 32 + 2 + len(e.spiderX)
-}
-
-func (e *realityExtension) Serialize() []byte {
-	buf := make([]byte, 0, e.Len())
-	buf = append(buf, e.shortID[:]...)
-	buf = append(buf, e.pubKey[:]...)
-	spiderXLen := len(e.spiderX)
-	buf = append(buf, byte(spiderXLen>>8), byte(spiderXLen))
-	buf = append(buf, []byte(e.spiderX)...)
-	return buf
-}
-
 func DialReality(cfg *RealityConfig) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", cfg.Addr, 10*time.Second)
 	if err != nil {
@@ -96,16 +74,13 @@ func DialReality(cfg *RealityConfig) (net.Conn, error) {
 
 	var shortID [8]byte
 	if cfg.ShortID != "" {
-		sidBytes, err := base64ToBytes(cfg.ShortID)
+		sidBytes, err := hex.DecodeString(cfg.ShortID)
+		if err != nil {
+			sidBytes, err = base64ToBytes(cfg.ShortID)
+		}
 		if err == nil {
 			copy(shortID[:], sidBytes[:min(len(sidBytes), 8)])
 		}
-	}
-
-	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("generate ecdsa key: %w", err)
 	}
 
 	helloID := buildClientHelloID(cfg.Fingerprint)
@@ -148,10 +123,9 @@ func DialReality(cfg *RealityConfig) (net.Conn, error) {
 			&utls.ALPNExtension{AlpnProtocols: []string{"h2", "http/1.1"}},
 			&utls.SCTExtension{},
 			&utls.UtlsPaddingExtension{GetPaddingLen: utls.BoringPaddingStyle},
+			buildRealityExtension(pubKeyBytes, shortID, cfg.SpiderX),
 		},
 	}
-
-	_ = ecdsaKey
 
 	if err := uconn.ApplyPreset(&spec); err != nil {
 		conn.Close()
@@ -165,6 +139,19 @@ func DialReality(cfg *RealityConfig) (net.Conn, error) {
 
 	log.Printf("[Reality] Connected to %s (SNI=%s)", cfg.Addr, cfg.SNI)
 	return uconn, nil
+}
+
+func buildRealityExtension(pubKey []byte, shortID [8]byte, spiderX string) *utls.GenericExtension {
+	spiderXBytes := []byte(spiderX)
+	spiderXLen := len(spiderXBytes)
+
+	data := make([]byte, 0, 8+32+2+spiderXLen)
+	data = append(data, shortID[:]...)
+	data = append(data, pubKey...)
+	data = append(data, byte(spiderXLen>>8), byte(spiderXLen))
+	data = append(data, spiderXBytes...)
+
+	return &utls.GenericExtension{Id: 0xff00, Data: data}
 }
 
 func ProxyToBackend(clientHeader *VLESSHeader, clientReader io.Reader, clientWriter io.Writer, backend *Backend, proxyUUID string) error {

@@ -58,6 +58,30 @@
       }
     },
     {
+      "tag": "vless-ws-in",
+      "listen": "127.0.0.1",
+      "port": 10001,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "b5e3a7c1-8f2d-4e6a-9b0c-1d3e5f7a9b2c"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "/vless-ws"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
+      }
+    },
+    {
       "tag": "api-in",
       "listen": "127.0.0.1",
       "port": 8081,
@@ -171,7 +195,7 @@
         "outboundTag": "api"
       },
       {
-        "inboundTag": ["vless-in"],
+        "inboundTag": ["vless-in", "vless-ws-in"],
         "balancerTag": "balancer"
       }
     ],
