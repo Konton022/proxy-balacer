@@ -10,10 +10,11 @@ import (
 )
 
 type HealthChecker struct {
-	mu       sync.RWMutex
-	statuses map[string]bool
-	pings    map[string]int64
-	timeout  time.Duration
+	mu            sync.RWMutex
+	statuses      map[string]bool
+	pings         map[string]int64
+	timeout       time.Duration
+	observatoryOK bool
 }
 
 func NewHealthChecker(timeout time.Duration) *HealthChecker {
@@ -45,6 +46,18 @@ func (h *HealthChecker) SetPing(addr string, pingMs int64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.pings[addr] = pingMs
+}
+
+func (h *HealthChecker) SetObservatoryOK(ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.observatoryOK = ok
+}
+
+func (h *HealthChecker) IsObservatoryOK() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.observatoryOK
 }
 
 func (h *HealthChecker) IsUp(addr string) bool {
@@ -95,12 +108,17 @@ func (h *HealthChecker) Start(addrs []string, interval time.Duration, onStatusCh
 				up, ping := h.Check(addr)
 				h.mu.RLock()
 				prevUp := h.statuses[addr]
+				obsOK := h.observatoryOK
 				h.mu.RUnlock()
 
 				h.SetPing(addr, ping)
 
 				if up {
 					log.Printf("[Health] %s UP (%dms)", addr, ping)
+				}
+
+				if obsOK {
+					continue
 				}
 
 				if prevUp != up {

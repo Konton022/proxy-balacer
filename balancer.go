@@ -2,7 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +26,8 @@ type Balancer struct {
 
 	manualMode    bool
 	manualAddr    string
+	lastSyncedAddr string
+	lastSyncTime   time.Time
 }
 
 func NewBalancer(db *gorm.DB, cfg *Config) *Balancer {
@@ -59,33 +67,34 @@ func (b *Balancer) checkSubscriptions() {
 		if be.SubURL == "" {
 			continue
 		}
-		prevUp := b.health.IsUp(be.Addr())
 		_, err := FetchSubscriptionURL(be.SubURL)
 		if err != nil {
-			if prevUp {
+			if b.health.IsUp(be.Addr()) {
 				log.Printf("[Health] %s subscription DOWN: %v", be.Name, err)
 			}
 			b.health.SetStatus(be.Addr(), false)
 			if be.Addr() == b.GetActive() {
 				b.failover()
 			}
-		} else if !prevUp {
-			log.Printf("[Health] %s subscription UP", be.Name)
-			b.health.SetStatus(be.Addr(), true)
-			if b.config.Failback && !b.manualMode {
-				b.tryFailback()
-			}
 		}
 	}
 }
 
 func (b *Balancer) Start(ctx context.Context) {
-	onChange := func(addr string, up bool) {
+	obsWatcher := NewObservatoryWatcher(b.health)
+	obsWatcher.OnStatusChange(func(addr string, up bool) {
 		if b.manualMode {
 			return
 		}
-		if up && b.config.Failback {
-			b.tryFailback()
+		if !up && addr == b.GetActive() {
+			b.failover()
+		}
+	})
+	obsWatcher.Start()
+
+	onChange := func(addr string, up bool) {
+		if b.manualMode {
+			return
 		}
 		if !up && addr == b.GetActive() {
 			b.failover()
@@ -152,6 +161,7 @@ func (b *Balancer) SetManual(addr string) {
 		b.manualAddr = ""
 		log.Printf("[Balancer] Switched to AUTO mode")
 		b.selectBestUnlocked()
+		b.syncXrayLocked(b.currentAddr)
 		return
 	}
 
@@ -159,6 +169,7 @@ func (b *Balancer) SetManual(addr string) {
 	b.manualAddr = addr
 	b.currentAddr = addr
 	log.Printf("[Balancer] Manual switch to %s", addr)
+	b.syncXrayLocked(addr)
 }
 
 func (b *Balancer) GetAllAddrPing() map[string]int64 {
@@ -181,12 +192,14 @@ func (b *Balancer) selectInitial() {
 	best := b.health.BestUp(b.allAddrsUnlocked())
 	if best != "" {
 		b.currentAddr = best
+		b.syncXrayLocked(best)
 		return
 	}
 
 	addrs := b.allAddrsUnlocked()
 	if len(addrs) > 0 {
 		b.currentAddr = addrs[0]
+		b.syncXrayLocked(addrs[0])
 	}
 }
 
@@ -194,6 +207,7 @@ func (b *Balancer) selectBest() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.selectBestUnlocked()
+	b.syncXrayLocked(b.currentAddr)
 }
 
 func (b *Balancer) selectBestUnlocked() {
@@ -228,6 +242,7 @@ func (b *Balancer) failover() {
 		log.Printf("[Balancer] Failover: switching from %s to %s", b.currentAddr, best)
 		b.currentAddr = best
 		b.metrics.RecordFailover()
+		b.syncXrayLocked(best)
 		return
 	}
 	log.Printf("[Balancer] No healthy backends to failover to")
@@ -281,7 +296,134 @@ func (b *Balancer) tryFailback() {
 			log.Printf("[Balancer] Failback: switching back to primary %s", addr)
 			b.currentAddr = addr
 			b.metrics.RecordFailback()
+			b.syncXrayLocked(addr)
 			return
 		}
 	}
+}
+
+const xrayConfigPath = "/opt/proxy-balancer/xray-config.json"
+
+func (b *Balancer) syncXrayLocked(addr string) {
+	if addr == b.lastSyncedAddr && time.Since(b.lastSyncTime) < 30*time.Second {
+		return
+	}
+	b.lastSyncedAddr = addr
+	b.lastSyncTime = time.Now()
+
+	data, err := os.ReadFile(xrayConfigPath)
+	if err != nil {
+		log.Printf("[Balancer] Failed to read xray config: %v", err)
+		return
+	}
+
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[Balancer] Failed to parse xray config: %v", err)
+		return
+	}
+
+	routing, ok := cfg["routing"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		return
+	}
+
+	var newRules []interface{}
+	for _, r := range rules {
+		rule, ok := r.(map[string]interface{})
+		if !ok {
+			newRules = append(newRules, r)
+			continue
+		}
+		obTag, _ := rule["outboundTag"].(string)
+		_, hasBalancer := rule["balancerTag"]
+		if strings.HasPrefix(obTag, "proxy-") || hasBalancer {
+			continue
+		}
+		newRules = append(newRules, r)
+	}
+
+	if addr != "" {
+		outboundTag := b.findOutboundTag(addr, cfg)
+		if outboundTag == "" {
+			log.Printf("[Balancer] Could not find xray outbound for address %s", addr)
+			routing["rules"] = newRules
+		} else {
+			log.Printf("[Balancer] Xray routing forced to %s (outbound: %s)", addr, outboundTag)
+			manualRule := map[string]interface{}{
+				"inboundTag":  []interface{}{"vless-in", "vless-ws-in"},
+				"outboundTag": outboundTag,
+			}
+			routing["rules"] = append([]interface{}{manualRule}, newRules...)
+		}
+	} else {
+		log.Printf("[Balancer] Xray routing returned to AUTO")
+		routing["rules"] = newRules
+	}
+
+	newData, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return
+	}
+
+	if err := os.WriteFile(xrayConfigPath, newData, 0644); err != nil {
+		log.Printf("[Balancer] Failed to write xray config: %v", err)
+		return
+	}
+
+	cmd := exec.Command("systemctl", "restart", "proxy-balancer")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("[Balancer] Failed to restart xray: %v %s", err, string(output))
+	} else {
+		log.Printf("[Balancer] Xray restarted successfully")
+	}
+}
+
+func (b *Balancer) findOutboundTag(addr string, cfg map[string]interface{}) string {
+	outbounds, ok := cfg["outbounds"].([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, o := range outbounds {
+		ob, ok := o.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tag, _ := ob["tag"].(string)
+		if !strings.HasPrefix(tag, "proxy-") {
+			continue
+		}
+		settings, ok := ob["settings"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		vnext, ok := settings["vnext"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, v := range vnext {
+			vn, ok := v.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			vnAddr, _ := vn["address"].(string)
+			vnPort := 0
+			switch p := vn["port"].(type) {
+			case float64:
+				vnPort = int(p)
+			case string:
+				vnPort, _ = strconv.Atoi(p)
+			}
+			candidate := fmt.Sprintf("%s:%d", vnAddr, vnPort)
+			if candidate == addr {
+				return tag
+			}
+		}
+	}
+	return ""
 }

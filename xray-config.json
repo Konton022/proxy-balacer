@@ -223,11 +223,11 @@
     "domainStrategy": "AsIs",
     "rules": [
       {
-        "balancerTag": "balancer",
         "inboundTag": [
           "vless-in",
           "vless-ws-in"
-        ]
+        ],
+        "outboundTag": "proxy-gr"
       },
       {
         "inboundTag": [

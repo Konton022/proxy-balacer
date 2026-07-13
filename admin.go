@@ -7,7 +7,6 @@ import (
 	"crypto/x509/pkix"
 	"embed"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"html/template"
@@ -17,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -553,9 +551,6 @@ func (a *AdminServer) toggleBackend(w http.ResponseWriter, r *http.Request, path
 	a.db.Model(&backend).Update("enabled", !backend.Enabled)
 	a.balancer.Reload()
 	log.Printf("[Admin] Toggled backend %s: enabled=%v", backend.Name, !backend.Enabled)
-	if !backend.Enabled {
-		a.syncXrayRouting(a.balancer.GetActive())
-	}
 	w.WriteHeader(200)
 }
 
@@ -570,7 +565,6 @@ func (a *AdminServer) deleteBackend(w http.ResponseWriter, r *http.Request, path
 func (a *AdminServer) setActiveServer(w http.ResponseWriter, r *http.Request) {
 	addr := r.FormValue("addr")
 	a.balancer.SetManual(addr)
-	a.syncXrayRouting(addr)
 	http.Redirect(w, r, "/", 302)
 }
 
@@ -721,7 +715,7 @@ func (a *AdminServer) subscriptionEndpoint(w http.ResponseWriter, r *http.Reques
 		proxyUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	}
 
-	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp&flow=xtls-rprx-vision#Balancer",
+	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=ws&path=/vless-ws#Balancer",
 		proxyUUID, balancerHost, a.config.ListenPort, balancerHost)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -755,7 +749,7 @@ func (a *AdminServer) ServeSubscriptionHTTP(conn net.Conn, req *http.Request) {
 		proxyUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	}
 
-	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=tcp&flow=xtls-rprx-vision#Balancer",
+	link := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=ws&path=/vless-ws#Balancer",
 		proxyUUID, balancerHost, a.config.ListenPort, balancerHost)
 
 	resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store, must-revalidate\r\nContent-Length: %d\r\nSubscription-Userinfo: upload=0; download=0; total=0; expire=0\r\n\r\n%s", len(link), link)
@@ -792,133 +786,4 @@ func (a *AdminServer) subscriptionQR(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "image/png")
 	w.Write(png)
-}
-
-const xrayConfigPath = "/opt/proxy-balancer/xray-config.json"
-
-func (a *AdminServer) syncXrayRouting(addr string) {
-	data, err := os.ReadFile(xrayConfigPath)
-	if err != nil {
-		log.Printf("[Admin] Failed to read xray config: %v", err)
-		return
-	}
-
-	var cfg map[string]interface{}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[Admin] Failed to parse xray config: %v", err)
-		return
-	}
-
-	routing, ok := cfg["routing"].(map[string]interface{})
-	if !ok {
-		log.Printf("[Admin] No routing section in xray config")
-		return
-	}
-
-	rules, ok := routing["rules"].([]interface{})
-	if !ok {
-		log.Printf("[Admin] No rules in routing section")
-		return
-	}
-
-	var newRules []interface{}
-	for _, r := range rules {
-		rule, ok := r.(map[string]interface{})
-		if !ok {
-			newRules = append(newRules, r)
-			continue
-		}
-		obTag, _ := rule["outboundTag"].(string)
-		inTags, _ := rule["inboundTag"].([]interface{})
-		isManualProxy := strings.HasPrefix(obTag, "proxy-")
-		if isManualProxy && inTags != nil {
-			for _, t := range inTags {
-				if ts, ok := t.(string); ok && (ts == "vless-in" || ts == "vless-ws-in") {
-					goto skipRule
-				}
-			}
-		}
-		newRules = append(newRules, r)
-		skipRule:
-	}
-
-	if addr != "" {
-		outboundTag := a.findOutboundTag(addr, cfg)
-		if outboundTag == "" {
-			log.Printf("[Admin] Could not find xray outbound for address %s", addr)
-			routing["rules"] = newRules
-		} else {
-			log.Printf("[Admin] Xray routing forced to %s (outbound: %s)", addr, outboundTag)
-			manualRule := map[string]interface{}{
-				"inboundTag": []interface{}{"vless-in", "vless-ws-in"},
-				"outboundTag": outboundTag,
-			}
-			routing["rules"] = append([]interface{}{manualRule}, newRules...)
-		}
-	} else {
-		log.Printf("[Admin] Xray routing returned to AUTO (leastPing balancer)")
-		routing["rules"] = newRules
-	}
-
-	newData, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		log.Printf("[Admin] Failed to marshal xray config: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(xrayConfigPath, newData, 0644); err != nil {
-		log.Printf("[Admin] Failed to write xray config: %v", err)
-		return
-	}
-
-	cmd := exec.Command("systemctl", "restart", "proxy-balancer")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("[Admin] Failed to restart xray: %v %s", err, string(output))
-	} else {
-		log.Printf("[Admin] Xray restarted successfully")
-	}
-}
-
-func (a *AdminServer) findOutboundTag(addr string, cfg map[string]interface{}) string {
-	outbounds, ok := cfg["outbounds"].([]interface{})
-	if !ok {
-		return ""
-	}
-	for _, o := range outbounds {
-		ob, ok := o.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		tag, _ := ob["tag"].(string)
-		if !strings.HasPrefix(tag, "proxy-") {
-			continue
-		}
-		settings, ok := ob["settings"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		vnext, ok := settings["vnext"].([]interface{})
-		if !ok {
-			continue
-		}
-		for _, v := range vnext {
-			vn, ok := v.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			vnAddr, _ := vn["address"].(string)
-			vnPort := 0
-			switch p := vn["port"].(type) {
-			case float64:
-				vnPort = int(p)
-			case string:
-				vnPort, _ = strconv.Atoi(p)
-			}
-			candidate := fmt.Sprintf("%s:%d", vnAddr, vnPort)
-			if candidate == addr {
-				return tag
-			}
-		}
-	}
-	return ""
 }
