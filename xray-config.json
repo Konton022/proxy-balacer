@@ -1,64 +1,52 @@
 {
-  "log": {
-    "loglevel": "info",
-    "access": "/var/log/xray/access.log",
-    "error": "/var/log/xray/error.log"
-  },
   "api": {
-    "tag": "api",
-    "services": ["StatsService"]
-  },
-  "stats": {},
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true
-      }
-    },
-    "system": {
-      "statsInboundUplink": true,
-      "statsInboundDownlink": true,
-      "statsOutboundUplink": true,
-      "statsOutboundDownlink": true
-    }
+    "services": [
+      "StatsService"
+    ],
+    "tag": "api"
   },
   "inbounds": [
     {
-      "tag": "vless-in",
       "listen": "0.0.0.0",
       "port": 8443,
       "protocol": "vless",
       "settings": {
         "clients": [
           {
-            "id": "b5e3a7c1-8f2d-4e6a-9b0c-1d3e5f7a9b2c",
-            "flow": "xtls-rprx-vision"
+            "flow": "xtls-rprx-vision",
+            "id": "b5e3a7c1-8f2d-4e6a-9b0c-1d3e5f7a9b2c"
           }
         ],
         "decryption": "none"
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true
       },
       "streamSettings": {
         "network": "tcp",
         "security": "tls",
         "tlsSettings": {
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
           "certificates": [
             {
               "certificateFile": "/etc/letsencrypt/live/proxy-balancer.duckdns.org/fullchain.pem",
               "keyFile": "/etc/letsencrypt/live/proxy-balancer.duckdns.org/privkey.pem"
             }
           ],
-          "minVersion": "1.2",
-          "alpn": ["h2", "http/1.1"]
+          "minVersion": "1.2"
         }
       },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls", "quic"]
-      }
+      "tag": "vless-in"
     },
     {
-      "tag": "vless-ws-in",
       "listen": "127.0.0.1",
       "port": 10001,
       "protocol": "vless",
@@ -70,30 +58,47 @@
         ],
         "decryption": "none"
       },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true
+      },
       "streamSettings": {
         "network": "ws",
         "wsSettings": {
           "path": "/vless-ws"
         }
       },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls", "quic"]
-      }
+      "tag": "vless-ws-in"
     },
     {
-      "tag": "api-in",
       "listen": "127.0.0.1",
       "port": 8081,
       "protocol": "dokodemo-door",
       "settings": {
         "address": "127.0.0.1"
-      }
+      },
+      "tag": "api-in"
     }
   ],
+  "log": {
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log",
+    "loglevel": "info"
+  },
+  "observatory": {
+    "enableConcurrency": true,
+    "probeInterval": "30s",
+    "probeUrl": "https://www.google.com/generate_204",
+    "subjectSelector": [
+      "proxy-"
+    ]
+  },
   "outbounds": [
     {
-      "tag": "proxy-de",
       "protocol": "vless",
       "settings": {
         "vnext": [
@@ -102,9 +107,9 @@
             "port": 29327,
             "users": [
               {
-                "id": "fc3f9ef0-7b2e-43bc-a1b1-cd645fb8af32",
                 "encryption": "none",
-                "flow": "xtls-rprx-vision"
+                "flow": "xtls-rprx-vision",
+                "id": "fc3f9ef0-7b2e-43bc-a1b1-cd645fb8af32"
               }
             ]
           }
@@ -112,18 +117,18 @@
       },
       "streamSettings": {
         "network": "tcp",
-        "security": "reality",
         "realitySettings": {
-          "serverName": "www.apple.com",
           "fingerprint": "edge",
           "publicKey": "Uxcj7x6WNnL8_xDxGNk1U3BX0Vis5WqXm_xg_pjvYTA",
+          "serverName": "www.apple.com",
           "shortId": "cd92e3",
           "spiderX": "/OjljTkpiEEwNhZF"
-        }
-      }
+        },
+        "security": "reality"
+      },
+      "tag": "proxy-de"
     },
     {
-      "tag": "proxy-us",
       "protocol": "vless",
       "settings": {
         "vnext": [
@@ -132,9 +137,9 @@
             "port": 53130,
             "users": [
               {
-                "id": "094f218f-a179-44a7-af06-81465875c5df",
                 "encryption": "none",
-                "flow": "xtls-rprx-vision"
+                "flow": "xtls-rprx-vision",
+                "id": "094f218f-a179-44a7-af06-81465875c5df"
               }
             ]
           }
@@ -142,18 +147,18 @@
       },
       "streamSettings": {
         "network": "tcp",
-        "security": "reality",
         "realitySettings": {
-          "serverName": "download.amd.com",
           "fingerprint": "edge",
           "publicKey": "fO91aDQmLlcZktTcgxeU4orXDdkXgdA6VsUF3csmJ10",
+          "serverName": "download.amd.com",
           "shortId": "9a9d",
           "spiderX": "/rHzn4OwHY8beC7p"
-        }
-      }
+        },
+        "security": "reality"
+      },
+      "tag": "proxy-us"
     },
     {
-      "tag": "proxy-gr",
       "protocol": "vless",
       "settings": {
         "vnext": [
@@ -162,9 +167,9 @@
             "port": 443,
             "users": [
               {
-                "id": "41fa83e8-9096-4ba0-b339-f718324ae012",
                 "encryption": "none",
-                "flow": "xtls-rprx-vision"
+                "flow": "xtls-rprx-vision",
+                "id": "41fa83e8-9096-4ba0-b339-f718324ae012"
               }
             ]
           }
@@ -172,48 +177,65 @@
       },
       "streamSettings": {
         "network": "tcp",
-        "security": "reality",
         "realitySettings": {
-          "serverName": "cuidateplus.com",
           "fingerprint": "random",
           "publicKey": "88-7-L23OZyz36FwaiY6XcFedFdJ48af0h3lmNcC7BE",
+          "serverName": "cuidateplus.com",
           "shortId": "f6",
           "spiderX": "/JDXmqKzbsXwX2xY"
-        }
-      }
+        },
+        "security": "reality"
+      },
+      "tag": "proxy-gr"
     },
     {
-      "tag": "direct",
-      "protocol": "freedom"
+      "protocol": "freedom",
+      "tag": "direct"
     }
   ],
-  "routing": {
-    "domainStrategy": "AsIs",
-    "rules": [
-      {
-        "inboundTag": ["api-in"],
-        "outboundTag": "api"
-      },
-      {
-        "inboundTag": ["vless-in", "vless-ws-in"],
-        "balancerTag": "balancer"
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserDownlink": true,
+        "statsUserUplink": true
       }
-    ],
+    },
+    "system": {
+      "statsInboundDownlink": true,
+      "statsInboundUplink": true,
+      "statsOutboundDownlink": true,
+      "statsOutboundUplink": true
+    }
+  },
+  "routing": {
     "balancers": [
       {
-        "tag": "balancer",
-        "selector": ["proxy-"],
+        "fallbackTag": "proxy-us",
+        "selector": [
+          "proxy-"
+        ],
         "strategy": {
           "type": "leastPing"
         },
-        "fallbackTag": "proxy-us"
+        "tag": "balancer"
+      }
+    ],
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "balancerTag": "balancer",
+        "inboundTag": [
+          "vless-in",
+          "vless-ws-in"
+        ]
+      },
+      {
+        "inboundTag": [
+          "api-in"
+        ],
+        "outboundTag": "api"
       }
     ]
   },
-  "observatory": {
-    "subjectSelector": ["proxy-"],
-    "probeUrl": "https://www.google.com/generate_204",
-    "probeInterval": "30s",
-    "enableConcurrency": true
-  }
+  "stats": {}
 }
